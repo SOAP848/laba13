@@ -1,0 +1,183 @@
+version: '3.8'
+
+services:
+  nats:
+    image: nats:latest
+    container_name: nats-server
+    ports:
+      - "4222:4222"
+      - "8222:8222"  # мониторинг
+    command: "-js"  # включить JetStream
+    networks:
+      - test-automation-net
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    ports:
+      - "16686:16686"  # UI
+      - "14268:14268"  # ingest
+      - "14250:14250"  # model
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - test-automation-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./configs/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+    depends_on:
+      - jaeger
+    networks:
+      - test-automation-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - test-automation-net
+    command: redis-server --appendonly yes
+
+  test-generator:
+    build: .
+    container_name: test-generator
+    command: ./test-generator
+    environment:
+      - NATS_URL=nats://nats:4222
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=test-generator
+    depends_on:
+      - nats
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
+  test-runner:
+    build: .
+    container_name: test-runner
+    command: ./test-runner
+    environment:
+      - NATS_URL=nats://nats:4222
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=test-runner
+    depends_on:
+      - nats
+      - test-generator
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
+  coverage-analyzer:
+    build: .
+    container_name: coverage-analyzer
+    command: ./coverage-analyzer
+    environment:
+      - NATS_URL=nats://nats:4222
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=coverage-analyzer
+    depends_on:
+      - nats
+      - test-runner
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
+  orchestrator:
+    build: .
+    container_name: orchestrator
+    command: sh -c "sleep 10 && ./orchestrator"
+    environment:
+      - NATS_URL=nats://nats:4222
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=orchestrator
+    depends_on:
+      - nats
+      - test-generator
+      - test-runner
+      - coverage-analyzer
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: "no"
+
+  stateful-agent:
+    build: .
+    container_name: stateful-agent
+    command: ./stateful-agent
+    environment:
+      - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis:6379
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=stateful-agent
+    depends_on:
+      - nats
+      - redis
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
+  auctioneer:
+    build: .
+    container_name: auctioneer
+    command: ./auctioneer
+    environment:
+      - NATS_URL=nats://nats:4222
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=auctioneer
+    depends_on:
+      - nats
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
+  python-llm-agent:
+    build: ./python-llm-agent
+    container_name: python-llm-agent
+    environment:
+      - NATS_URL=nats://nats:4222
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - LLM_MODEL=llama3-8b-8192
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=python-llm-agent
+    depends_on:
+      - nats
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
+  web-panel:
+    build: .
+    container_name: web-panel
+    command: ./web-panel
+    environment:
+      - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis:6379
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=web-panel
+    ports:
+      - "8000:8000"
+    depends_on:
+      - nats
+      - redis
+      - otel-collector
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
+networks:
+  test-automation-net:
+    driver: bridge
