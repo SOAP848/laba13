@@ -178,6 +178,19 @@ services:
       - test-automation-net
     restart: unless-stopped
 
+  streamlit-panel:
+    build: ./web-panel-streamlit
+    container_name: streamlit-panel
+    environment:
+      - USE_DOCKER_NETWORK=true
+    ports:
+      - "8501:8501"
+    depends_on:
+      - web-panel
+    networks:
+      - test-automation-net
+    restart: unless-stopped
+
 networks:
   test-automation-net:
     driver: bridge
